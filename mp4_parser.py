@@ -763,8 +763,7 @@ def mp4parse(fd, depth, rem_size):
 from argparse import ArgumentParser
 from argparse import ArgumentDefaultsHelpFormatter
 ap = ArgumentParser(
-        description="this is example.",
-        epilog="this is the tail story.",
+        description="a parser for MP4 format.",
         formatter_class=ArgumentDefaultsHelpFormatter)
 ap.add_argument("mp4file", help="MP4 file.")
 ap.add_argument("--save-mdat", action="store", dest="save_mdat",
