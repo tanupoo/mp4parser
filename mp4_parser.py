@@ -1,4 +1,3 @@
-import sys
 import os
 import argparse
 
@@ -774,7 +773,7 @@ ap.add_argument("-d", action="store_true", dest="debug",
                 help="enable debug mode.")
 opt = ap.parse_args()
 
-file_size = os.stat(sys.argv[1]).st_size
+file_size = os.stat(opt.mp4file).st_size
 print(f"file size: {file_size}")
-with open(sys.argv[1], "rb") as fd:
+with open(opt.mp4file, "rb") as fd:
     mp4parse(fd, 0, file_size)
