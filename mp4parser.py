@@ -124,7 +124,17 @@ def parse_mdat(fd, depth, body_size):
         bit(8) data[];
     }
     """
-    fd.read(body_size)
+    if opt.save_mdat:
+        with open(opt.save_mdat, "wb") as fd_dst:
+            max_read_size = 16*1024
+            while body_size > 0:
+                buf = fd.read(min([max_read_size,body_size]))
+                if not buf:
+                    break
+                fd_dst.write(buf)
+                body_size -= max_read_size
+    else:
+        fd.read(body_size)
 
 def parse_mdhd(fd, depth, body_size):
     """
@@ -757,6 +767,8 @@ ap = ArgumentParser(
         epilog="this is the tail story.",
         formatter_class=ArgumentDefaultsHelpFormatter)
 ap.add_argument("mp4file", help="MP4 file.")
+ap.add_argument("--save-mdat", action="store", dest="save_mdat",
+                help="specify a file name to be stored mdat.")
 ap.add_argument("-v", action="store_true", dest="verbose",
                 help="enable verbose mode.")
 ap.add_argument("-d", action="store_true", dest="debug",
