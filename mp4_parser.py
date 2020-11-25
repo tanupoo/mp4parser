@@ -8,6 +8,78 @@ import argparse
 remaining_size = fd.tell()
 
 body_size = (box_size in the box header) - (box header length)
+
+    + tkhd:
+        width, height: For non-visual tracks (e.g. audio), should be set to 0.
+    + mdia: 6162
+        + mdhd: 32
+        + hdlr: 45
+        + minf: 6077
+            + vmhd: 20
+            + dinf: 36
+                + dref: 28
+            + stbl: 6013
+                + stsd: 157
+                + stts: 24
+                + stss: 28
+                + ctts: 2872
+                + stsc: 64
+                + stsz: 1460
+                + stco: 1400
+
+vmhd: Video Media Header Box
+    graphicsmode: 0, copy over the existing image
+    opcolor: red, green, blue for use by graphics modes, 0
+
+smhd: Sound Media Header Box
+    balance: a fixed-point 8.8 number, 0 is centre.
+
+stts: Decoding Time to Sample Box
+    DT(n+1) = DT(n) + STTS(n)
+    DT(i) = SUM(for j=0 to i-1 of delta(j))
+    entry_count: an integer, gives the number of entries.
+    sample_count: an integer, counts the number of consecutive samples
+        that have the given duration.
+    sample_delta: an integer, the delta of these samples in the
+        time-scale of the media.
+
+stco: Chunk Offset Box
+    Offsets are file offsets, not the offset into any box within the file (e.g.
+    Media Data Box).
+    chunk_offset;
+        the offset of the start of a chunk into its containing media file.
+
+stsz: Sample Size Boxes
+    sample_size: an integer, the default sample size.
+        0: the samples have different sizes, and those sizes are stored
+            in the sample size table.
+        not 0: all the samples are the same size and no array follows.
+            XXX indicating sample_count is 0 ?
+    sample_count: integer that gives the number of samples in the track.
+        not 0: the number of entries in the following table.  sample_size is 0.
+        0: XXX
+    entry_size: an integer specifying the size of a sample,
+        indexed by its number.
+
+stsc: Sample To Chunk Box
+    Samples within the media data are grouped into chunks. Chunks can be of
+    different sizes, and the samples within a chunk can have different
+    sizes.
+    You can convert this to a sample count by multiplying by the appropriate
+    samples- per-chunk.
+    entry_count: an integer, the number of entries in the following table.
+    first_chunk: an integer, the index of the first chunk in this run of chunks
+        that share the same samples-per-chunk and sample-description-index;
+        the index of the first chunk in a track has the value 1
+        (the first_chunk field in the first record of this box has the value 1,
+        identifying that the first sample maps to the first chunk).
+    samples_per_chunk: an integer, the number of samples in each of these
+        chunks.
+    sample_description_index is an integer that gives the index
+        of the sample entry that describes the samples in this chunk.
+        The index ranges from 1 to the number of sample entries in the Sample
+        Description Box.
+
 """
 
 def indent(depth):
@@ -26,12 +98,12 @@ def decode_hex(v_raw, signed=False):
     return "0x" + "".join([ "{:02x}".format(i) for i in v_raw ])
 
 def print_array1(depth, v_name, v_val, v_raw, offset, nb_item):
-    print(f"{indent(depth)}{v_name}({nb_item:02}) {v_val}", end="")
-    print(f" : 0x{v_raw.hex()} offset={offset}" if opt.debug else "")
+    print(f"{indent(depth)}{v_name}({nb_item:02}): {v_val}", end="")
+    print(f" :: 0x{v_raw.hex()} offset={offset}" if opt.debug else "")
 
 def print_val(depth, v_name, v_val, v_raw, offset):
-    print(f"{indent(depth)}{v_name} {v_val}", end="")
-    print(f" : 0x{v_raw.hex()} offset={offset}" if opt.debug else "")
+    print(f"{indent(depth)}{v_name}: {v_val}", end="")
+    print(f" :: 0x{v_raw.hex()} offset={offset}" if opt.debug else "")
 
 def parse_base(fd, depth, offset, v_name, v_size, v_buf_size, decode_func,
                signed=False):
@@ -64,10 +136,21 @@ def parse_str(fd, depth, offset, v_name, v_size, v_buf_size=None):
 def parse_hex(fd, depth, offset, v_name, v_size, v_buf_size=None):
     return parse_base(fd, depth, offset, v_name, v_size, v_buf_size, decode_hex)
 
+def get_str_null(fd, offset, max_size):
+    buf = []
+    while max_size > offset:
+        a = fd.read(1)
+        offset += 1
+        if a == b"\x00":
+            break
+        buf.append(a)
+    name = b"".join(buf).decode()
+    return name, offset
+
 def parse_fullbox(fd, depth, offset):
     """
     Note: assuming that the former part (i.e. Box) has been parsed before.
-
+        only parse version and flags.
     aligned(8) class FullBox(unsigned int(32) boxtype,
                              unsigned int(8) v,
                              bit(24) f)
@@ -94,7 +177,7 @@ def parse_sample_entry(fd, depth, offset):
 
 def check_remaining(fd, depth, body_size, offset):
     if body_size > offset:
-        print(f"{indent(depth)}=> body_size {body_size} != offset {offset}")
+        print(f"{indent(depth)}==> body_size {body_size} != offset {offset}")
         v, offset = parse_hex(fd, depth+1, offset, "remaining", body_size-offset)
     elif body_size < offset:
         raise ValueError(f"body_size {body_size} < offset {offset}")
@@ -103,7 +186,9 @@ def check_remaining(fd, depth, body_size, offset):
 # boxes parser
 #
 def parse_gen(fd, depth, body_size):
-    fd.read(body_size)
+    buf = fd.read(body_size)
+    if opt.debug:
+        print(f"{indent(depth)}gen: 0x{buf.hex()}")
 
 def parse_con(fd, depth, body_size):
     """
@@ -273,6 +358,22 @@ def parse_vmhd(fd, depth, body_size):
     v, offset = parse_int(fd, depth, offset, "opcolor", 2, 6)
     check_remaining(fd, depth, body_size, offset)
 
+def parse_smhd(fd, depth, body_size):
+    """
+    aligned(8) class SoundMediaHeaderBox
+        extends FullBox(‘smhd’, version = 0, 0) {
+        template int(16) balance = 0;
+        const unsigned int(16) reserved = 0;
+    }
+    """
+    if not opt.verbose:
+        fd.read(body_size)
+        return
+    version, flags, offset = parse_fullbox(fd, depth, 0)
+    v, offset = parse_int(fd, depth, offset, "balance", 2)
+    v, offset = parse_int(fd, depth, offset, "reserved", 2)
+    check_remaining(fd, depth, body_size, offset)
+
 def parse_elst(fd, depth, body_size):
     """
     aligned(8) class EditListBox
@@ -311,16 +412,16 @@ def parse_elst(fd, depth, body_size):
 def parse_dref(fd, depth, body_size):
     """
     aligned(8) class DataEntryUrlBox (bit(24) flags)
-                     extends FullBox(‘url ’, version = 0, flags) {
+        extends FullBox(‘url ’, version = 0, flags) {
         string location;
     }
     aligned(8) class DataEntryUrnBox (bit(24) flags)
-                     extends FullBox(‘urn ’, version = 0, flags) {
+        extends FullBox(‘urn ’, version = 0, flags) {
         string name;
         string location;
     }
     aligned(8) class DataReferenceBox
-                     extends FullBox(‘dref’, version = 0, 0) {
+        extends FullBox(‘dref’, version = 0, 0) {
         unsigned int(32) entry_count;
         for (i=1; i <= entry_count; i++) {
             DataEntryBox(entry_version, entry_flags) data_entry;
@@ -338,14 +439,8 @@ def parse_dref(fd, depth, body_size):
     entry_count, offset = parse_int(fd, depth, offset, "entry_count", 4)
     while body_size > offset and entry_count > 0:
         version, flags, offset = parse_fullbox(fd, depth+1, offset)
-        buf = []
-        while body_size > offset:
-            a = fd.read(1)
-            offset += 1
-            if a == b"\x00":
-                break
-            buf.append(a)
-        print(f"{indent(depth+1)}entry {entry_count}:{b''.join(buf).decode()}")
+        name, offset = get_str_null(fd, offset, body_size)
+        print(f"{indent(depth+1)}entry {entry_count}:{name}")
         entry_count -= 1
     check_remaining(fd, depth, body_size, offset)
 
@@ -373,7 +468,12 @@ def parse_stsd(fd, depth, body_size):
     for i in range(entry_count):
         box_type, box_size, box_hdr_size = parse_box(fd, depth, body_size)
         sample_hdr_size  = parse_sample_entry(fd, depth+1, 0)
+        print("xxx", box_type, box_size)
+        pf_tab.get(box_type, parse_gen)(fd, depth+1,
+                                        box_size-box_hdr_size-sample_hdr_size)
+        """
         parse_hex(fd, depth+1, 0, "data", box_size-box_hdr_size-sample_hdr_size)
+        """
         offset += box_size
     check_remaining(fd, depth, body_size, offset)
 
@@ -483,9 +583,10 @@ def parse_stsc(fd, depth, body_size):
     version, flags, offset = parse_fullbox(fd, depth, 0)
     entry_count, offset = parse_int(fd, depth, offset, "entry_count", 4)
     for i in range(entry_count):
-        v, offset = parse_int(fd, depth+1, offset, "first_chunk", 4)
-        v, offset = parse_int(fd, depth+1, offset, "samples_per_chunk", 4)
-        v, offset = parse_int(fd, depth+1, offset, "sample_description_index", 4)
+        v, offset = parse_int(fd, depth+1, offset, f"first_chunk[{i}]", 4)
+        v, offset = parse_int(fd, depth+1, offset, f"samples_per_chunk[{i}]", 4)
+        v, offset = parse_int(fd, depth+1, offset,
+                              f"sample_description_index[{i}]", 4)
     check_remaining(fd, depth, body_size, offset)
 
 def parse_stsz(fd, depth, body_size):
@@ -508,8 +609,12 @@ def parse_stsz(fd, depth, body_size):
     sample_size, offset = parse_int(fd, depth, offset, "sample_size", 4)
     sample_count, offset = parse_int(fd, depth, offset, "sample_count", 4)
     if sample_size == 0:
+        total_entry_size = 0
         for i in range(sample_count):
-            entry_size, offset = parse_int(fd, depth+1, offset, "entry_size", 4)
+            entry_size, offset = parse_int(fd, depth+1, offset,
+                                           f"entry_size[{i}]", 4)
+            total_entry_size += entry_size
+        print(f"{indent(depth)}total_entry_size: {total_entry_size}")
     check_remaining(fd, depth, body_size, offset)
 
 def parse_stco(fd, depth, body_size):
@@ -528,7 +633,7 @@ def parse_stco(fd, depth, body_size):
     version, flags, offset = parse_fullbox(fd, depth, 0)
     entry_count, offset = parse_int(fd, depth, offset, "entry_count", 4)
     for i in range(entry_count):
-        v, offset = parse_int(fd, depth+1, offset, "chunk_offset", 4)
+        v, offset = parse_int(fd, depth+1, offset, f"chunk_offset[{i}]", 4)
     check_remaining(fd, depth, body_size, offset)
 
 def parse_sgpd(fd, depth, body_size):
@@ -602,6 +707,47 @@ def parse_sbgp(fd, depth, body_size):
     for i in range(entry_count):
         v, offset = parse_int(fd, depth, offset, "sample_count", 4)
         v, offset = parse_int(fd, depth, offset, "group_description_index", 4)
+    check_remaining(fd, depth, body_size, offset)
+
+def parse_meta(fd, depth, body_size):
+    """
+    aligned(8) class MetaBox (handler_type)
+        extends FullBox(‘meta’, version = 0, 0) {
+        HandlerBox(handler_type) theHandler;
+        PrimaryItemBox primary_resource;
+        DataInformationBox file_locations;
+        ItemLocationBox item_locations;
+        ItemProtectionBox protections;
+        ItemInfoBox item_infos;
+        IPMPControlBox IPMP_control;
+        ItemReferenceBox item_refs;
+        ItemDataBox item_data;
+        Box   other_boxes[];
+    }
+    """
+    if not opt.verbose:
+        fd.read(body_size)
+        return
+    version, flags, offset = parse_fullbox(fd, depth, 0)
+    parse_con(fd, depth, body_size-offset)
+
+def parse_icpv(fd, depth, body_size):
+    """
+    class IncompleteAVCSampleEntry()
+        extends VisualSampleEntry (‘icpv’){
+        CompleteTrackInfoBox();
+        AVCConfigurationBox config;
+        MPEG4BitRateBox (); // optional
+        MPEG4ExtensionDescriptorsBox (); // optional
+    }
+    """
+    if not opt.verbose:
+        fd.read(body_size)
+        return
+    version, flags, offset = parse_fullbox(fd, depth, 0)
+    entry_count, offset = parse_int(fd, depth, offset, "entry_count", 4)
+    for i in range(entry_count):
+        v, offset = parse_int(fd, depth+1, offset, f"chunk_offset[{i}]", 4)
     check_remaining(fd, depth, body_size, offset)
 
 def parse_ftyp(fd, depth, body_size):
@@ -690,6 +836,7 @@ pf_tab = {
         "hdlr": parse_hdlr,
         "minf": parse_con,
         "vmhd": parse_vmhd,
+        "smhd": parse_smhd,
         "dinf": parse_con,
         "stbl": parse_con, 
         "dref": parse_dref,
@@ -700,9 +847,11 @@ pf_tab = {
         "stsc": parse_stsc,
         "stsz": parse_stsz,
         "stco": parse_stco,
-        "avc1": parse_gen, #
+        "avc1": parse_con,
         "sgpd": parse_sgpd,
         "sbgp": parse_sbgp,
+        "udta": parse_con,
+        "meta": parse_meta,
         }
 
 def parse_box(fd, depth, rem_size):
