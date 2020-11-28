@@ -1,5 +1,6 @@
 import os
 import argparse
+import json
 
 # ISO/IEC 14496-12-2005
 # ISO/IEC 14496-1
@@ -81,6 +82,9 @@ stsc: Sample To Chunk Box
         Description Box.
 
 """
+
+g_sample = None # placeholder, initialized at parse_trak()
+g_trak = []
 
 def indent(depth):
     return "  "*depth
@@ -190,10 +194,18 @@ def parse_gen(fd, depth, body_size):
     if opt.debug:
         print(f"{indent(depth)}gen: 0x{buf.hex()}")
 
+def parse_trak(fd, depth, body_size):
+    """
+    aligned(8) class TrackBox extends Box(‘trak’) { }
+    """
+    global g_sample
+    g_sample = {}
+    mp4parse(fd, depth+1, body_size)
+    g_trak.append(g_sample.copy())  # enough to shallow copy.
+
 def parse_con(fd, depth, body_size):
     """
     aligned(8) class MovieBox extends Box(‘moov’) { }
-    aligned(8) class TrackBox extends Box(‘trak’) { }
     aligned(8) class MediaBox extends Box(‘mdia’) { }
     aligned(8) class EditBox extends Box(‘edts’) { }
     aligned(8) class DataInformationBox extends Box(‘dinf’) { }
@@ -321,13 +333,13 @@ def parse_tkhd(fd, depth, body_size):
     if version == 1:
         v, offset = parse_int(fd, depth, offset, "creation_time", 8)
         v, offset = parse_int(fd, depth, offset, "modification_time", 8)
-        v, offset = parse_int(fd, depth, offset, "trackID", 4)
+        track_id, offset = parse_int(fd, depth, offset, "trackID", 4)
         v, offset = parse_int(fd, depth, offset, "reserved", 4)
         v, offset = parse_int(fd, depth, offset, "duration", 8)
     elif version == 0:
         v, offset = parse_int(fd, depth, offset, "creation_time", 4)
         v, offset = parse_int(fd, depth, offset, "modification_time", 4)
-        v, offset = parse_int(fd, depth, offset, "trackID", 4)
+        track_id, offset = parse_int(fd, depth, offset, "trackID", 4)
         v, offset = parse_int(fd, depth, offset, "reserved", 4)
         v, offset = parse_int(fd, depth, offset, "duration", 4)
     else:
@@ -340,6 +352,7 @@ def parse_tkhd(fd, depth, body_size):
     v, offset = parse_hex(fd, depth, offset, "matrix", 4, 36)
     v, offset = parse_int(fd, depth, offset, "width", 4)
     v, offset = parse_int(fd, depth, offset, "height", 4)
+    g_sample.setdefault("track_id", track_id)
     check_remaining(fd, depth, body_size, offset)
 
 def parse_vmhd(fd, depth, body_size):
@@ -356,6 +369,7 @@ def parse_vmhd(fd, depth, body_size):
     version, flags, offset = parse_fullbox(fd, depth, 0)
     v, offset = parse_int(fd, depth, offset, "graphicsmode", 2)
     v, offset = parse_int(fd, depth, offset, "opcolor", 2, 6)
+    g_sample.setdefault("media", "video")
     check_remaining(fd, depth, body_size, offset)
 
 def parse_smhd(fd, depth, body_size):
@@ -372,6 +386,7 @@ def parse_smhd(fd, depth, body_size):
     version, flags, offset = parse_fullbox(fd, depth, 0)
     v, offset = parse_int(fd, depth, offset, "balance", 2)
     v, offset = parse_int(fd, depth, offset, "reserved", 2)
+    g_sample.setdefault("media", "audio")
     check_remaining(fd, depth, body_size, offset)
 
 def parse_elst(fd, depth, body_size):
@@ -468,14 +483,18 @@ def parse_stsd(fd, depth, body_size):
     for i in range(entry_count):
         box_type, box_size, box_hdr_size = parse_box(fd, depth, body_size)
         sample_hdr_size  = parse_sample_entry(fd, depth+1, 0)
-        print("xxx", box_type, box_size)
         pf_tab.get(box_type, parse_gen)(fd, depth+1,
                                         box_size-box_hdr_size-sample_hdr_size)
-        """
-        parse_hex(fd, depth+1, 0, "data", box_size-box_hdr_size-sample_hdr_size)
-        """
         offset += box_size
     check_remaining(fd, depth, body_size, offset)
+
+def decode_sample_dt(vals):
+    stts = []
+    for count,delta in vals:
+        for j in range(count):
+            stts.append(delta)
+    g_sample.setdefault("stts", stts)
+    return sum(stts)
 
 def parse_stts(fd, depth, body_size):
     """
@@ -494,9 +513,13 @@ def parse_stts(fd, depth, body_size):
         return
     version, flags, offset = parse_fullbox(fd, depth, 0)
     entry_count, offset = parse_int(fd, depth, offset, "entry_count", 4)
+    vals = []
     for i in range(entry_count):
-        v, offset = parse_int(fd, depth+1, offset, "sample_count", 4)
-        v, offset = parse_int(fd, depth+1, offset, "sample_delta", 4)
+        sample_count, offset = parse_int(fd, depth+1, offset, "sample_count", 4)
+        sample_delta, offset = parse_int(fd, depth+1, offset, "sample_delta", 4)
+        vals.append((sample_count, sample_delta))
+    duration = decode_sample_dt(vals)
+    print(f"{indent(depth+1)}sum of delta: {duration}")
     check_remaining(fd, depth, body_size, offset)
 
 def parse_stss(fd, depth, body_size):
@@ -565,6 +588,21 @@ def parse_ctts(fd, depth, body_size):
         raise ValueError(f"unknown version {version}")
     check_remaining(fd, depth, body_size, offset)
 
+def decode_chunk_samples(vals):
+    """
+    decoding Sample to Chunk (stsc)
+    """
+    stsc = []
+    n = 0
+    n,nb_samples = vals.pop(0)
+    for next_chunk_num,next_nb_samples in vals:
+        while next_chunk_num > n:
+            stsc.append(nb_samples)
+            n += 1
+        nb_samples = next_nb_samples
+    stsc.append(next_nb_samples)
+    g_sample.setdefault("stsc", stsc)
+
 def parse_stsc(fd, depth, body_size):
     """
     aligned(8) class SampleToChunkBox
@@ -582,11 +620,16 @@ def parse_stsc(fd, depth, body_size):
         return
     version, flags, offset = parse_fullbox(fd, depth, 0)
     entry_count, offset = parse_int(fd, depth, offset, "entry_count", 4)
+    vals = []
     for i in range(entry_count):
-        v, offset = parse_int(fd, depth+1, offset, f"first_chunk[{i}]", 4)
-        v, offset = parse_int(fd, depth+1, offset, f"samples_per_chunk[{i}]", 4)
+        first_chunk, offset = parse_int(fd, depth+1, offset,
+                                        f"first_chunk[{i}]", 4)
+        samples_per_chunk, offset = parse_int(fd, depth+1, offset,
+                                              f"samples_per_chunk[{i}]", 4)
         v, offset = parse_int(fd, depth+1, offset,
                               f"sample_description_index[{i}]", 4)
+        vals.append((first_chunk,samples_per_chunk))
+    decode_chunk_samples(vals)
     check_remaining(fd, depth, body_size, offset)
 
 def parse_stsz(fd, depth, body_size):
@@ -608,13 +651,20 @@ def parse_stsz(fd, depth, body_size):
     version, flags, offset = parse_fullbox(fd, depth, 0)
     sample_size, offset = parse_int(fd, depth, offset, "sample_size", 4)
     sample_count, offset = parse_int(fd, depth, offset, "sample_count", 4)
+    vals = []
     if sample_size == 0:
         total_entry_size = 0
         for i in range(sample_count):
             entry_size, offset = parse_int(fd, depth+1, offset,
                                            f"entry_size[{i}]", 4)
+            vals.append(entry_size)
             total_entry_size += entry_size
-        print(f"{indent(depth)}total_entry_size: {total_entry_size}")
+    else:
+        for i in range(sample_count):
+            vals.append(sample_size)
+        total_entry_size = sample_size*sample_count
+    print(f"{indent(depth)}total_entry_size: {total_entry_size}")
+    g_sample.setdefault("stsz", vals)
     check_remaining(fd, depth, body_size, offset)
 
 def parse_stco(fd, depth, body_size):
@@ -632,8 +682,12 @@ def parse_stco(fd, depth, body_size):
         return
     version, flags, offset = parse_fullbox(fd, depth, 0)
     entry_count, offset = parse_int(fd, depth, offset, "entry_count", 4)
+    vals = []
     for i in range(entry_count):
-        v, offset = parse_int(fd, depth+1, offset, f"chunk_offset[{i}]", 4)
+        chunk_offset, offset = parse_int(fd, depth+1, offset,
+                                         f"chunk_offset[{i}]", 4)
+        vals.append(chunk_offset)
+    g_sample.setdefault("stco", vals)
     check_remaining(fd, depth, body_size, offset)
 
 def parse_sgpd(fd, depth, body_size):
@@ -827,7 +881,7 @@ pf_tab = {
         "moov": parse_con,
         "mvhd": parse_mvhd,
         "iods": parse_gen, # spec ?
-        "trak": parse_con,
+        "trak": parse_trak,
         "tkhd": parse_tkhd,
         "edts": parse_con,
         "elst": parse_elst,
@@ -847,7 +901,8 @@ pf_tab = {
         "stsc": parse_stsc,
         "stsz": parse_stsz,
         "stco": parse_stco,
-        "avc1": parse_con,
+        "avc1": parse_gen,
+        "mp4a": parse_gen,
         "sgpd": parse_sgpd,
         "sbgp": parse_sbgp,
         "udta": parse_con,
@@ -915,7 +970,9 @@ ap = ArgumentParser(
         formatter_class=ArgumentDefaultsHelpFormatter)
 ap.add_argument("mp4file", help="MP4 file.")
 ap.add_argument("--save-mdat", action="store", dest="save_mdat",
-                help="specify a file name to be stored mdat.")
+                help="specify a file name to store mdat.")
+ap.add_argument("--save-stbl", action="store", dest="save_stbl",
+                help="specify a file name to store stbl.")
 ap.add_argument("-v", action="store_true", dest="verbose",
                 help="enable verbose mode.")
 ap.add_argument("-d", action="store_true", dest="debug",
@@ -926,3 +983,7 @@ file_size = os.stat(opt.mp4file).st_size
 print(f"file size: {file_size}")
 with open(opt.mp4file, "rb") as fd:
     mp4parse(fd, 0, file_size)
+
+if opt.save_stbl:
+    with open(opt.save_stbl, "w") as fd_stbl:
+        json.dump(g_trak, fd_stbl)
