@@ -42,7 +42,7 @@ def parse_adts(buf):
     h = bin(int.from_bytes(buf[:7],"big"))[2:].rjust(56,"0")
     return {
             "header_length": 7 if h[15] == "1" else 9,
-            "version": "MP4" if h[12] == "1" else "MP2",
+            "version": "MP4" if h[12] == "0" else "MP2",
             "b_crc_absent": int(h[15]), # 0:CRC 1:No-CRC
             "profile": profile_map.get(h[16:18]),
             "freq": freq_index_map.get(h[18:22]),
@@ -71,11 +71,11 @@ adts_hdr = {
         "b_crid_bit": "C",
         "b_crid_start": "C",
         "frame_length": "FrameLen",
-        "buffer_fullness": "Buffers",
+        "buffer_fullness": "Bufs",
         "nb_aac_frames": "AC",
         }
 
-adts_fmt = "{offset:8} {header_length:2} {version:3} {b_crc_absent:1} {profile:4} {freq:8} {b_private_bit:1} {ch_conf:5} {b_originality:1} {b_home:1} {b_crid_bit:1} {b_crid_start:1} {frame_length:6} {buffer_fullness:6} {nb_aac_frames:2}"
+adts_fmt = "{offset:8} {header_length:2} {version:3} {b_crc_absent:1} {profile:4} {freq:8} {b_private_bit:1} {ch_conf:5} {b_originality:1} {b_home:1} {b_crid_bit:1} {b_crid_start:1} {frame_length:8} {buffer_fullness:6} {nb_aac_frames:2}"
 
 if __name__ == "__main__":
     import sys
