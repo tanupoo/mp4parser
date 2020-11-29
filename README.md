@@ -1,6 +1,8 @@
 MP4 parser
 ==========
 
+My study of MP4 data.
+
 ## Example
 
 ```
