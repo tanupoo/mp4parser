@@ -202,7 +202,7 @@ def parse_trak(fd, depth, body_size):
     g_sample = {}
     mp4parse(fd, depth+1, body_size)
     if opt.save_stbl:
-        g_traks.update({g_sample["track_id"]:
+        g_traks.update({"track{}".format(g_sample["track_id"]):
                         g_sample.copy()}) # enough to shallow copy.
 
 def parse_con(fd, depth, body_size):
