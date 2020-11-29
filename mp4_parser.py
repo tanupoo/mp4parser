@@ -84,7 +84,7 @@ stsc: Sample To Chunk Box
 """
 
 g_sample = None # placeholder, initialized at parse_trak()
-g_trak = []
+g_traks = {}
 
 def indent(depth):
     return "  "*depth
@@ -201,7 +201,9 @@ def parse_trak(fd, depth, body_size):
     global g_sample
     g_sample = {}
     mp4parse(fd, depth+1, body_size)
-    g_trak.append(g_sample.copy())  # enough to shallow copy.
+    if opt.save_stbl:
+        g_traks.update({g_sample["track_id"]:
+                        g_sample.copy()}) # enough to shallow copy.
 
 def parse_con(fd, depth, body_size):
     """
@@ -220,6 +222,8 @@ def parse_mdat(fd, depth, body_size):
         bit(8) data[];
     }
     """
+    if opt.save_stbl:
+        g_traks.update({"mdat_offset": fd.tell()})
     if opt.save_mdat:
         with open(opt.save_mdat, "wb") as fd_dst:
             max_read_size = 16*1024
@@ -979,6 +983,10 @@ ap.add_argument("-d", action="store_true", dest="debug",
                 help="enable debug mode.")
 opt = ap.parse_args()
 
+if opt.save_mdat or opt.save_stbl:
+    # enable verbose mode. to store mdat or stbl, need to parse detail.
+    opt.verbose = True
+
 file_size = os.stat(opt.mp4file).st_size
 print(f"file size: {file_size}")
 with open(opt.mp4file, "rb") as fd:
@@ -986,4 +994,4 @@ with open(opt.mp4file, "rb") as fd:
 
 if opt.save_stbl:
     with open(opt.save_stbl, "w") as fd_stbl:
-        json.dump(g_trak, fd_stbl)
+        json.dump(g_traks, fd_stbl)
